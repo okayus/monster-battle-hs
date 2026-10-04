@@ -1,0 +1,184 @@
+/**
+ * The player SPA's calls to the API.
+ *
+ * Every function here returns a `Result` and never rejects. A failed request
+ * is an ordinary outcome for a UI — offline, a validation error, a skin that
+ * does not exist — so it is a value the caller has to handle, not an exception
+ * it might forget to catch.
+ *
+ * Paths are relative (`/api/...`). The browser only ever talks to its own
+ * origin: Vite proxies /api in development and Hono serves both in production,
+ * so there is no base URL to configure and no CORS (docs/01-architecture.md).
+ */
+
+import { err, ok } from "@mba/core";
+import type {
+  BattleView,
+  GameMap,
+  MonsterView,
+  Result,
+  SaveData,
+  TurnOutcome,
+  WearableSkin,
+} from "@mba/core";
+import type { Appearance, RenderableSkin, Skin } from "@mba/sprite";
+
+/**
+ * Why a call failed. `kind` is the API's own machine-readable `error.kind`
+ * when the server answered with one (docs/04-api-design.md). Otherwise it is
+ * one of two kinds that only exist on this side: `network` (no answer at all)
+ * and `unexpected_response` (an answer that was not the API's JSON).
+ */
+export interface ApiError {
+  kind: string;
+  /** HTTP status, when there was a response. */
+  status?: number;
+}
+
+/** Digs `error.kind` out of an error body, if the body has that shape. */
+function kindOf(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null || !("error" in body)) return undefined;
+  const error = body.error;
+  if (typeof error !== "object" || error === null || !("kind" in error)) return undefined;
+  return typeof error.kind === "string" ? error.kind : undefined;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<Result<T, ApiError>> {
+  let response: Response;
+  try {
+    response = await fetch(path, init);
+  } catch {
+    return err({ kind: "network" });
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return err({ kind: "unexpected_response", status: response.status });
+  }
+
+  if (!response.ok) {
+    return err({ kind: kindOf(body) ?? "unexpected_response", status: response.status });
+  }
+  // A cast, not a check: this is the app's own server answering 2xx. Trust runs
+  // one way across this boundary — the server validates what the browser sends,
+  // and the browser believes what the server stored.
+  return ok(body as T);
+}
+
+/** Saves a skin and returns the id the server gave it. */
+export function createSkin(skin: Skin): Promise<Result<{ id: string }, ApiError>> {
+  return request("/api/skins", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(skin),
+  });
+}
+
+/** Fetches the render-ready form of a saved skin. */
+export function fetchSkin(id: string): Promise<Result<RenderableSkin, ApiError>> {
+  // The id can come from the address bar, so it is escaped rather than assumed
+  // to be a single path segment.
+  return request(`/api/skins/${encodeURIComponent(id)}`);
+}
+
+/**
+ * Fetches the editable form of a saved skin, to open it in the editor. Only
+ * the editor asks for this; a screen that just draws a skin uses `fetchSkin`.
+ */
+export function fetchSkinSource(id: string): Promise<Result<Skin, ApiError>> {
+  return request(`/api/skins/${encodeURIComponent(id)}/source`);
+}
+
+/** Every skin there is, by name: what there is to wear. The drawings are fetched one by one. */
+export function fetchSkins(): Promise<Result<WearableSkin[], ApiError>> {
+  return request("/api/skins");
+}
+
+/**
+ * What the player looks like, as a recipe. The server answers with the default
+ * look if nothing was ever chosen, so there is no "no look" to handle here.
+ */
+export function fetchAppearance(): Promise<Result<Appearance, ApiError>> {
+  return request("/api/appearance");
+}
+
+/**
+ * Replaces the player's look. Only the recipe is sent — ids and colours, never
+ * a drawing — and the answer is the recipe as the server wrote it down.
+ */
+export function putAppearance(appearance: Appearance): Promise<Result<Appearance, ApiError>> {
+  return request("/api/appearance", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(appearance),
+  });
+}
+
+/** Where the player is. The server answers with the starting point if nothing was ever saved. */
+export function fetchSave(): Promise<Result<SaveData, ApiError>> {
+  return request("/api/save");
+}
+
+/** Stores where the player is. The server refuses anywhere a player cannot stand. */
+export function putSave(save: SaveData): Promise<Result<SaveData, ApiError>> {
+  return request("/api/save", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(save),
+    // Lets the request finish even if the page is closed right after the last step.
+    keepalive: true,
+  });
+}
+
+export function fetchMap(id: string): Promise<Result<GameMap, ApiError>> {
+  return request(`/api/maps/${encodeURIComponent(id)}`);
+}
+
+/**
+ * Goes through the exit the server has the player standing on. Like starting
+ * a battle, there is nothing to send: which exit and where it leads are both
+ * the server's to say. The answer is where the player is now.
+ */
+export function travelThroughExit(): Promise<Result<SaveData, ApiError>> {
+  return request("/api/travel", { method: "POST" });
+}
+
+/**
+ * The player's monsters, the one that fights first. Each arrives with its
+ * level and its health already worked out: the rules for that are the
+ * server's, and this side only shows the answer.
+ */
+export function fetchMonsters(): Promise<Result<MonsterView[], ApiError>> {
+  return request("/api/monsters");
+}
+
+/**
+ * Starts a battle on the tile the server has the player on. There is nothing
+ * to send: where the player is and who turns up are both the server's to say.
+ */
+export function startBattle(): Promise<Result<BattleView, ApiError>> {
+  return request("/api/battles", { method: "POST" });
+}
+
+export function fetchBattle(id: string): Promise<Result<BattleView, ApiError>> {
+  return request(`/api/battles/${encodeURIComponent(id)}`);
+}
+
+/**
+ * Plays one turn. The move is the only thing the browser decides; `turn` is
+ * the count it was last shown, so that a request sent twice is refused the
+ * second time instead of playing two turns.
+ */
+export function playTurn(
+  id: string,
+  moveId: string,
+  turn: number,
+): Promise<Result<TurnOutcome, ApiError>> {
+  return request(`/api/battles/${encodeURIComponent(id)}/turn`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ moveId, turn }),
+  });
+}

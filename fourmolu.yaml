@@ -1,0 +1,5 @@
+indentation: 2
+column-limit: 100
+single-constraint-parens: never
+single-deriving-parens: auto
+haddock-style: single-line

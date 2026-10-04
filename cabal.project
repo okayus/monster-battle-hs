@@ -1,0 +1,7 @@
+packages: .
+
+-- Hackage as it was on this day. With cabal.project.freeze, the same versions
+-- of everything are built on every machine and in CI.
+index-state: hackage.haskell.org 2026-10-03T00:00:00Z
+
+tests: True

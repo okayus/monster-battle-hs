@@ -1,0 +1,10 @@
+dist-newstyle/
+data/
+.env
+
+# What the SPA build and the e2e run leave behind.
+node_modules/
+frontend/**/dist/
+e2e/test-results/
+e2e/playwright-report/
+public/

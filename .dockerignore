@@ -1,0 +1,11 @@
+.git
+dist-newstyle
+data
+.env
+**/node_modules
+frontend/**/dist
+
+# Built from its own context (e2e/Dockerfile). Keeping it out of this one also
+# means that editing a test does not invalidate the layers of the app's image.
+e2e
+.github

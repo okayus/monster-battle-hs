@@ -1,0 +1,45 @@
+# Development: GHC and cabal in a container, the source bind-mounted.
+#
+#   docker compose run --rm dev cabal update                     # once
+#   docker compose run --rm dev cabal build all
+#   docker compose run --rm dev cabal test all
+#   docker compose run --rm dev cabal run demo
+#   docker build --target spa --output public .                  # the two SPAs, built, into ./public
+#   docker compose run --rm --service-ports dev cabal run monster-battle-hs   # http://localhost:3300
+#
+# Nothing is installed on the host: not GHC, not Node. The package index and
+# the dependencies that cabal builds stay in the `cabal` volume between runs.
+name: monster-battle-hs
+
+services:
+  fixtures:
+    image: node:24
+    user: "1000:1000"
+    working_dir: /work
+    network_mode: none
+    volumes:
+      - .:/work
+
+  lint:
+    build:
+      context: .
+      target: lint-tools
+    user: "1000:1000"
+    volumes:
+      - .:/work
+
+  dev:
+    build:
+      context: .
+      target: hs
+    volumes:
+      - .:/work
+      - cabal:/home/dev/.cabal
+    # 3300 on the host: TS 版's dev container has 3000, and both may be up.
+    ports:
+      - "3300:3000"
+    environment:
+      DATABASE_PATH: /work/data/dev.db
+
+volumes:
+  cabal:

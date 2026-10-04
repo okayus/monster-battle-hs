@@ -1,0 +1,2 @@
+# hlint's suggestions are on, all of them. A rule turned off here says why.
+- arguments: [-XQualifiedDo, -XDataKinds, -XGADTs]

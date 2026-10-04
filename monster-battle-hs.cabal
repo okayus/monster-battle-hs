@@ -1,0 +1,162 @@
+cabal-version:      3.0
+name:               monster-battle-hs
+version:            0.1.0.0
+synopsis:
+  The monster battle app's backend in Haskell: decisions are data, and
+  interpreters give them meaning
+
+license:            NONE
+build-type:         Simple
+extra-doc-files:    README.md
+extra-source-files: seed/*.json, test/fixtures/*.json
+
+-- The libraries below are layered, and the build holds the layers in place:
+--
+--   domain <- decision <- sqlite <- http <- exe
+--
+-- each one may use only the ones to its left (docs/01-design.md §ライブラリと依存の向き).
+
+common warnings
+  ghc-options:
+    -Wall -Wno-unticked-promoted-constructors -Werror=incomplete-patterns
+
+common language
+  default-language: GHC2021
+
+-- The rules the server shares with the browser. Pure: no I/O in its deps.
+library domain
+  import:          warnings, language
+  hs-source-dirs:  src/domain
+  exposed-modules: Mba.Map, Mba.Appearance
+  build-depends:
+    , base        >=4.18 && <5
+    , containers
+    , text
+
+-- The decision language, the decisions, and the pure model they run on.
+library decision
+  import:          warnings, language
+  hs-source-dirs:  src/decision
+  exposed-modules:
+    Mba.Decision
+    Mba.Decision.Internal
+    Mba.Decision.Run
+    Mba.Maps
+    Mba.Looks
+    Mba.Model
+    Mba.Refusal
+    Mba.Saves
+
+  build-depends:
+    , base
+    , containers
+    , monster-battle-hs:domain
+    , text
+
+-- SQLite: migrations, the seed, and the interpreter that answers from it.
+library sqlite
+  import:          warnings, language
+  hs-source-dirs:  src/sqlite
+  exposed-modules: Mba.Sqlite
+  build-depends:
+    , aeson
+    , base
+    , bytestring
+    , containers
+    , direct-sqlite
+    , directory
+    , filepath
+    , monster-battle-hs:decision
+    , monster-battle-hs:domain
+    , sqlite-simple
+    , text
+
+-- HTTP: the routes as data, and the server that interprets them.
+library http
+  import:          warnings, language
+  hs-source-dirs:  src/http
+  exposed-modules:
+    Mba.Auth
+    Mba.Http
+    Mba.Http.Body
+    Mba.Http.Json
+    Mba.Http.Refusal
+    Mba.Http.Static
+
+  build-depends:
+    , aeson
+    , base
+    , bytestring
+    , directory
+    , filepath
+    , http-types
+    , monster-battle-hs:decision
+    , monster-battle-hs:domain
+    , monster-battle-hs:sqlite
+    , scientific
+    , text
+    , wai
+
+executable monster-battle-hs
+  import:         warnings, language
+  hs-source-dirs: app
+  main-is:        Main.hs
+  ghc-options:    -threaded -rtsopts
+  build-depends:
+    , base
+    , directory
+    , filepath
+    , monster-battle-hs:http
+    , monster-battle-hs:sqlite
+    , time
+    , unix
+    , warp
+
+-- Prints one request at a time on the model: read, decide, changes, write.
+executable demo
+  import:         warnings, language
+  hs-source-dirs: demo examples
+  main-is:        Demo.hs
+  other-modules:  GoHome
+  build-depends:
+    , base
+    , containers
+    , monster-battle-hs:decision
+    , monster-battle-hs:domain
+    , monster-battle-hs:http
+    , text
+
+test-suite spec
+  import:         warnings, language
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test examples
+  main-is:        Spec.hs
+  other-modules:
+    GoHome
+    FixtureSpec
+    HttpSpec
+    MapSpec
+    ReadContractSpec
+    SavesSpec
+    SqliteSpec
+    Support
+    TypeErrorSpec
+
+  ghc-options:    -threaded
+  build-depends:
+    , aeson
+    , base
+    , bytestring
+    , containers
+    , hspec
+    , http-types
+    , monster-battle-hs:decision
+    , monster-battle-hs:domain
+    , monster-battle-hs:http
+    , monster-battle-hs:sqlite
+    , QuickCheck
+    , directory
+    , sqlite-simple
+    , text
+    , wai
+    , wai-extra
