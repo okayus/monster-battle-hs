@@ -15,7 +15,7 @@
 -- apart from another's (docs/01-design.md §直列にする).
 --
 -- @
--- db <- open (pure 0) ":memory:"
+-- db <- open (pure 0) (pure "new-id") ":memory:"
 -- applied <- migrate db "migrations" 0
 -- seed db localUser 0
 -- perform db (savePosition localUser wanted)
@@ -28,12 +28,13 @@ module Mba.Sqlite (
   seed,
   tables,
   perform,
+  create,
   query,
 )
 where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
-import Data.Aeson (decodeStrict, eitherDecodeStrict, encode, withObject, (.:))
+import Data.Aeson (Value, decodeStrict, eitherDecodeStrict, encode, toJSON, withObject, (.:))
 import Data.Aeson.Types (parseEither)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as LBS
@@ -50,27 +51,39 @@ import Database.SQLite3 qualified as Direct
 import System.Directory (listDirectory)
 import System.FilePath ((</>))
 
-import Mba.Appearance (Appearance (..), Colour (..), defaultSkinId)
-import Mba.Decision (Change (..), Decision, Phase (..), Query (..), UserId, userIdText)
+import Mba.Appearance (Appearance (..), Colour (..))
+import Mba.Decision (
+  Change (..),
+  Creation,
+  Decision,
+  Phase (..),
+  Query (..),
+  SkinSummary (..),
+  userIdText,
+ )
+import Mba.Decision.Internal (UserId (..))
 import Mba.Decision.Run qualified as Run
 import Mba.Map
 import Mba.Maps (starterMap)
+import Mba.Sprite (Skin, resolvedAppearance, skinName, toRenderable)
+import Mba.Sprite.Json (colourJson, jsonText, parseSkin, readRenderable, renderableJson, skinJson)
 
 data Db = Db
   { dbConnection :: !SQL.Connection
   , dbLock :: !(MVar ())
+  , dbNewId :: !(IO Text)
   , dbClock :: !(IO Int64)
   -- ^ Unix seconds. Handed in by Main, which is the only one with a real clock.
   }
 
 -- | Opens the database: a file, or @:memory:@ for the tests.
-open :: IO Int64 -> FilePath -> IO Db
-open clock path = do
+open :: IO Int64 -> IO Text -> FilePath -> IO Db
+open clock newId path = do
   conn <- SQL.open path
   SQL.execute_ conn "PRAGMA journal_mode = WAL"
   SQL.execute_ conn "PRAGMA foreign_keys = ON"
   lock <- newMVar ()
-  pure (Db conn lock clock)
+  pure (Db conn lock newId clock)
 
 close :: Db -> IO ()
 close = SQL.close . dbConnection
@@ -104,28 +117,16 @@ migrate db dir nowMs = do
   conn = dbConnection db
 
 -- | What every game starts with: the local user, who is the admin, and the
--- starter map and default skin. Runs at every boot, without overwriting them.
+-- starter map and four skins. Runs at every boot, without overwriting them.
 --
--- Not yet: TS 版 also seeds monsters, moves and monster skins here. They come with
+-- Not yet: TS 版 also seeds monsters, species and moves here. They come with
 -- the slices that use them.
 seed :: Db -> UserId -> Int64 -> IO ()
 seed db user now = do
   start <- either (fail . T.unpack) pure starterMap
-  -- A checked build-time asset from TS 版's playerSkin/parseSkin/toRenderable.
-  -- User-created skins will use the Haskell validator in the editing slice.
-  asset <- BS.readFile "seed/player-default.json"
-  (name, version, source, drawing) <- either fail pure $ do
-    value <- eitherDecodeStrict asset
-    parseEither
-      ( withObject "default skin" $ \o -> do
-          s <- o .: "source"
-          r <- o .: "renderable"
-          withObject
-            "source"
-            (\fields -> (,,,) <$> fields .: "name" <*> fields .: "formatVersion" <*> pure s <*> pure r)
-            s
-      )
-      value
+  assets <- BS.readFile "seed/skins.json"
+  values <- either fail pure (eitherDecodeStrict assets :: Either String [Value])
+  skins <- traverse seedSkin values
   SQL.withTransaction conn $ do
     SQL.execute
       conn
@@ -137,11 +138,7 @@ seed db user now = do
       "INSERT INTO maps (id, name, width, height, tiles, spawn_x, spawn_y) VALUES (?, ?, ?, ?, ?, ?, ?) \
       \ON CONFLICT DO NOTHING"
       (mapRow start)
-    SQL.execute
-      conn
-      "INSERT INTO skins (id, owner_id, name, format_version, source, renderable, created_at) \
-      \VALUES (?, NULL, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING"
-      (defaultSkinId, name :: Text, version :: Int, jsonText source, jsonText drawing, now)
+    for_ skins $ \(sid, skin) -> writeSkin True conn now sid Nothing skin
  where
   conn = dbConnection db
   mapRow m =
@@ -149,7 +146,32 @@ seed db user now = do
         Position sx sy = mapSpawn m
      in (mid, mapName m, mapWidth m, mapHeight m, tilesJson m, sx, sy)
   tilesJson = decodeUtf8 . LBS.toStrict . encode . map tileName . toList . mapTiles
-  jsonText = decodeUtf8 . LBS.toStrict . encode
+
+-- | Seed source passes the same boundary as an editor submission. The TS
+-- drawing alongside it is an oracle for tests, not the production renderer.
+seedSkin :: Value -> IO (Text, Skin)
+seedSkin value = either fail pure $ do
+  (sid, source) <-
+    parseEither (withObject "seed skin" $ \o -> (,) <$> o .: "id" <*> o .: "source") value
+  skin <- either (Left . show) Right (parseSkin source)
+  pure (sid, skin)
+
+writeSkin :: Bool -> SQL.Connection -> Int64 -> Text -> Maybe UserId -> Skin -> IO ()
+writeSkin initial conn now sid owner skin =
+  SQL.execute
+    conn
+    ( SQL.Query
+        ( "INSERT INTO skins (id, owner_id, name, format_version, source, renderable, created_at) VALUES (?, ?, ?, 1, ?, ?, ?)"
+            <> if initial then " ON CONFLICT DO NOTHING" else ""
+        )
+    )
+    ( sid
+    , userIdText <$> owner
+    , skinName skin
+    , jsonText (skinJson skin)
+    , jsonText (renderableJson (toRenderable skin))
+    , now
+    )
 
 -- | The tables there are, by name: what the migrations made.
 tables :: Db -> IO [Text]
@@ -175,6 +197,18 @@ perform db d = withMVar (dbLock db) $ \_ ->
         pure (Right a)
  where
   conn = dbConnection db
+
+-- | A creation gets its IDs from the composition root, inside the same
+-- transaction as its queries and writes.
+create :: Db -> Creation e 'Reading 'Settled a -> IO (Either e a)
+create db d = withMVar (dbLock db) $ \_ -> SQL.withImmediateTransaction (dbConnection db) $ do
+  result <- Run.create (dbNewId db) (answer (dbConnection db)) d
+  case result of
+    Left e -> pure (Left e)
+    Right (a, changes) -> do
+      now <- dbClock db
+      commit (dbConnection db) now changes
+      pure (Right a)
 
 -- | Runs a question, under the same lock, so that all it reads is one state.
 query :: Db -> Decision e 'Reading 'Reading a -> IO (Either e a)
@@ -205,6 +239,25 @@ answer conn (FindAppearance user) = do
 answer conn (FindDrawing sid) = do
   rows <- SQL.query conn "SELECT renderable FROM skins WHERE id = ?" (SQL.Only sid)
   pure (SQL.fromOnly <$> listToMaybe rows)
+answer conn (FindSource sid) = do
+  rows <- SQL.query conn "SELECT source FROM skins WHERE id = ?" (SQL.Only sid)
+  pure (SQL.fromOnly <$> listToMaybe rows)
+answer conn (FindWearable sid) = do
+  rows <-
+    SQL.query conn "SELECT renderable FROM skins WHERE id = ? AND retired_at IS NULL" (SQL.Only sid)
+  traverse
+    ( \(SQL.Only raw) -> either fail pure (eitherDecodeStrict (encodeUtf8 raw) >>= parseEither readRenderable)
+    )
+    (listToMaybe rows)
+answer conn ListSkins = do
+  rows <-
+    SQL.query_
+      conn
+      "SELECT id, name, owner_id, retired_at IS NOT NULL FROM skins ORDER BY created_at, id"
+  pure
+    [ SkinSummary sid name (UserId <$> owner) (retired /= (0 :: Int))
+    | (sid, name, owner, retired) <- rows
+    ]
 
 -- | Storage is trusted: invalid JSON here is a bug, not a client refusal.
 storedAppearance :: (Text, Text, Text) -> IO Appearance
@@ -234,3 +287,15 @@ commit conn now = traverse_ write
       \ON CONFLICT (user_id) DO UPDATE SET \
       \map_id = excluded.map_id, x = excluded.x, y = excluded.y, updated_at = excluded.updated_at"
       (userIdText user, mid, x, y, now)
+  write (SkinDrawn sid owner skin) = writeSkin False conn now sid (Just owner) skin
+  write (LookChosen user resolved) =
+    let look = resolvedAppearance resolved
+     in SQL.execute
+          conn
+          "INSERT INTO appearances (user_id, skin_id, part_overrides, colour_overrides, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET skin_id = excluded.skin_id, part_overrides = excluded.part_overrides, colour_overrides = excluded.colour_overrides, updated_at = excluded.updated_at"
+          ( userIdText user
+          , appearanceSkin look
+          , jsonText (toJSON (appearanceParts look))
+          , jsonText (toJSON (map colourJson (appearanceColours look)))
+          , now
+          )

@@ -2,7 +2,7 @@
 
 -- | HTTP contracts that need stored state changed independently of the API.
 -- A second connection sets up edits and saves that future admin routes will make.
-module ReadContractSpec (spec) where
+module ReadContractSpec (spec, withStoredApp, get, answers) where
 
 import Control.Exception (bracket)
 import Data.Aeson (Value, decode, encode, object, toJSON, (.=))
@@ -25,11 +25,12 @@ import Mba.Auth (localUser)
 import Mba.Http (Env (..), app)
 import Mba.Map
 import Mba.Sqlite qualified as Sqlite
-import Support (rooms, starter)
+import Support (idSupply, rooms, starter)
 
 withStoredApp :: ((Application, SQL.Connection, Sqlite.Db) -> IO a) -> IO a
-withStoredApp act = bracket temporary removeFile $ \path ->
-  bracket (Sqlite.open (pure 1700000000) path) Sqlite.close $ \db -> do
+withStoredApp act = bracket temporary removeFile $ \path -> do
+  next <- idSupply
+  bracket (Sqlite.open (pure 1700000000) next path) Sqlite.close $ \db -> do
     applied <- Sqlite.migrate db "migrations" 0
     Sqlite.seed db localUser 1700000000
     SQL.withConnection path $ \conn -> act (app (Env db applied "no-web" "no-admin"), conn, db)

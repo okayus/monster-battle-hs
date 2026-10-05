@@ -15,7 +15,7 @@
 -- @
 -- routes env user ["api", "save"] =
 --   [ Get (saveJson \<$\> whereIs user)
---   , Put 1024 saveShape (fmap saveJson . savePosition user)
+--   , Put 1024 (first Malformed . saveShape) (fmap saveJson . savePosition user)
 --   ]
 -- @
 module Mba.Http (
@@ -24,26 +24,37 @@ module Mba.Http (
 )
 where
 
-import Data.Aeson (Value, object, (.=))
+import Data.Aeson (ToJSON, Value, encode, object, toJSON, (.=))
 import Data.Bifunctor (first)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
-import Network.HTTP.Types (Method, hContentType, methodGet, methodPut, status200)
+import Network.HTTP.Types (
+  Method,
+  hContentType,
+  hLocation,
+  methodGet,
+  methodPost,
+  methodPut,
+  status200,
+  status201,
+ )
 import Network.Wai (Application, Request, Response, pathInfo, requestMethod, responseLBS)
 
 import Mba.Auth (userOf)
-import Mba.Decision (Decision, Phase (..), UserId)
+import Mba.Decision (Creation, Decision, Phase (..), SkinSummary (..), UserId)
 import Mba.Decision qualified as D
 import Mba.Http.Body (readJson)
 import Mba.Http.Json
 import Mba.Http.Refusal (refused)
 import Mba.Http.Static (static)
-import Mba.Looks (drawingById, lookOf)
+import Mba.Looks (chooseLook, drawingById, lookOf)
 import Mba.Map (MapId (..))
 import Mba.Maps (mapById)
 import Mba.Refusal (Refusal (..))
 import Mba.Saves (savePosition, whereIs)
+import Mba.Skins (drawSkin, sourceById, wearableSkins)
+import Mba.Sprite.Json (parseAppearance, parseSkin)
 import Mba.Sqlite (Db)
 import Mba.Sqlite qualified as Sqlite
 
@@ -58,18 +69,26 @@ data Env = Env
 -- | What can be done at a path: one constructor per method.
 data Endpoint where
   -- | Reads, and answers.
-  Get :: Decision Refusal 'Reading 'Reading Value -> Endpoint
+  Get :: ToJSON a => Decision Refusal 'Reading 'Reading a -> Endpoint
   -- | JSON that was derived and serialized when the skin was stored.
   GetStored :: Decision Refusal 'Reading 'Reading Text -> Endpoint
   -- | Takes a JSON body of at most so many bytes and of a shape (or says
   -- where it is not: @$.position.x@), and runs a decision that settles.
   Put ::
-    Int -> (Value -> Either Text a) -> (a -> Decision Refusal 'Reading 'Settled Value) -> Endpoint
+    ToJSON b =>
+    Int -> (Value -> Either Refusal a) -> (a -> Decision Refusal 'Reading 'Settled b) -> Endpoint
+  PostCreated ::
+    Int ->
+    Text ->
+    (Value -> Either Refusal a) ->
+    (a -> Creation Refusal 'Reading 'Settled Text) ->
+    Endpoint
 
 methodOf :: Endpoint -> Method
 methodOf Get{} = methodGet
 methodOf GetStored{} = methodGet
 methodOf Put{} = methodPut
+methodOf PostCreated{} = methodPost
 
 -- | The routing table.
 routes :: Env -> UserId -> [Text] -> [Endpoint]
@@ -77,10 +96,18 @@ routes env user path = case path of
   ["api", "health"] -> [Get (D.pure (health env))]
   ["api", "save"] ->
     [ Get (saveJson <$> whereIs user)
-    , Put 1024 saveShape (fmap saveJson . savePosition user)
+    , Put 1024 (first Malformed . saveShape) (fmap saveJson . savePosition user)
     ]
   ["api", "maps", mid] -> [Get (mapJson <$> mapById (MapId mid))]
-  ["api", "appearance"] -> [Get (appearanceJson <$> lookOf user)]
+  ["api", "appearance"] ->
+    [ Get (AppearanceReply <$> lookOf user)
+    , Put 4096 (first InvalidSprite . parseAppearance) (fmap AppearanceReply . chooseLook user)
+    ]
+  ["api", "skins"] ->
+    [ Get (skinListJson user <$> wearableSkins)
+    , PostCreated 65536 "/api/skins/" (first InvalidSprite . parseSkin) (drawSkin user)
+    ]
+  ["api", "skins", sid, "source"] -> [GetStored (sourceById sid)]
   ["api", "skins", sid] -> [GetStored (drawingById sid)]
   _ -> []
 
@@ -107,9 +134,33 @@ serve db (GetStored d) _ =
     <$> Sqlite.query db d
 serve db (Put limit shape d) req = do
   body <- readJson limit req
-  case body >>= first Malformed . shape of
+  case body >>= shape of
     Left r -> pure (refused r)
     Right input -> answered <$> Sqlite.perform db (d input)
+serve db (PostCreated limit prefix shape d) req = do
+  body <- readJson limit req
+  case body >>= shape of
+    Left r -> pure (refused r)
+    Right input -> do
+      result <- Sqlite.create db (d input)
+      pure $
+        either
+          refused
+          ( \sid ->
+              responseLBS
+                status201
+                [(hContentType, "application/json"), (hLocation, encodeUtf8 (prefix <> sid))]
+                (encode (object ["id" .= sid]))
+          )
+          result
 
-answered :: Either Refusal Value -> Response
+skinListJson :: UserId -> [SkinSummary] -> Value
+skinListJson user skins =
+  toJSON
+    [ object
+        ["id" .= summaryId skin, "name" .= summaryName skin, "mine" .= (summaryOwner skin == Just user)]
+    | skin <- skins
+    ]
+
+answered :: ToJSON a => Either Refusal a -> Response
 answered = either refused (json status200)

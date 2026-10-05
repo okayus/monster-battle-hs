@@ -2,7 +2,7 @@
 
 判断をデータとして書き、型で操作の順序を守り、インタプリタで実行するHaskellの学習用Webアプリです。
 
-TypeScript版のバックエンドを移植しています。画面・画面テスト・SQLは[移植元](../monster-battle-app)のcommit `14251cc`をそのまま使用します。現在はマップ画面（移動・保存・既定の見た目）まで実装・検証済みです。全体の完成状況と実行結果は[ロードマップ](docs/02-roadmap.md)を参照してください。
+TypeScript版のバックエンドを移植しています。画面・画面テスト・SQLは[移植元](../monster-battle-app)のcommit `14251cc`をそのまま使用します。現在はマップ画面に加え、スキン編集・保存・着せ替えを実装しています。全体の完成状況と実行結果は[ロードマップ](docs/02-roadmap.md)を参照してください。
 
 ## 実行
 
@@ -34,6 +34,7 @@ docker compose -f docker-compose.e2e.yml down
 |---|---|---|
 | `pure` | `i → i` | 値を返す |
 | `ask` | `Reading → Reading` | 型付きの問い合わせ |
+| `newId` | `Reading → Reading`、`WithIds`のみ | 外から渡された新IDを受け取る |
 | `refuse` | `Reading → j` | 断って以後を実行しない |
 | `settle` | `Reading → Settled` | 変更の一覧を確定する |
 | `>>=` | `i → j`と`j → k`を`i → k`へ | 操作をつなぐ |
@@ -47,23 +48,27 @@ bad user = D.do
 
 badGet :: Decision Refusal 'Reading 'Reading ()
 badGet = D.settle [] -- GETが要求するReadingで終わらない
+
+badId :: Decision Refusal 'Reading 'Reading Text
+badId = D.newId -- DecisionはWithoutIds。NewIdはWithIdsを要求する
 ```
 
-この制約を外すと、変更前のDBを確定後に再読したり、GETから更新したりできてしまいます。`test/TypeErrorSpec.hs`が4種類の禁止例を検証します。乱数とID取得の命令、バトルの段階を表す型は今後の実装です。
+この制約を外すと、変更前のDBを確定後に再読したり、GETから更新したりできてしまいます。`test/TypeErrorSpec.hs`が8種類の禁止例を検証します。`Program c e i j a`の能力`c`は、GETや既存の保存処理には`WithoutIds`、スキン作成には`WithIds`です。見た目の変更には検証・参照解決済みの`ResolvedAppearance`、スキン保存には検証済みの`Skin`が必要です。能力や境界の型を外すと、GETでIDを消費したり、未検証データをcommitしたりできてしまいます。乱数とバトルの段階を表す型は今後の実装です。
 
 ## モジュール
 
 | 場所 | 役割 |
 |---|---|
 | `src/domain/Mba/Map.hs` | タイル、移動、到達可能性の純粋な規則 |
-| `src/domain/Mba/Appearance.hs` | 保存された見た目のレシピと既定値 |
+| `src/domain/Mba/{Appearance,Sprite}.hs` | 見た目レシピ、スキンの内部型、矩形結合・見た目合成 |
+| `src/codec/Mba/` | JSON境界、UTF-16長、JS互換の再直列化サイズ |
 | `src/decision/Mba/Decision*` | 判断の言語、スマートコンストラクタ、共通インタプリタ |
 | `src/decision/Mba/Model.hs` | メモリ上の状態と問い合わせ・変更の解釈 |
 | `src/decision/Mba/{Maps,Saves}.hs` | マップと保存の判断 |
-| `src/decision/Mba/Looks.hs` | 見た目レシピと保存済みの絵の取得 |
+| `src/decision/Mba/{Looks,Skins}.hs` | スキン作成・取得・一覧と、見た目の選択・復帰 |
 | `src/sqlite/Mba/Sqlite.hs` | マイグレーション、seed、直列化、SQLiteへの問い合わせとcommit |
 | `src/http/Mba/Http*` | ルート、JSON境界、拒否、静的配信 |
-| `app/Main.hs` | 時計・環境変数・起動と停止 |
+| `app/Main.hs` | 時計・UUID供給・環境変数・起動と停止 |
 | `demo/`、`examples/` | 判断を段階ごとに見せる例 |
 
 設計判断は[設計](docs/01-design.md)、継続時の規約は[AGENTS.md](AGENTS.md)、最初の調査記録は[HANDOFF.md](HANDOFF.md)にあります。

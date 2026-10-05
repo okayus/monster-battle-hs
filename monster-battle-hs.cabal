@@ -12,7 +12,7 @@ extra-source-files: seed/*.json, test/fixtures/*.json
 
 -- The libraries below are layered, and the build holds the layers in place:
 --
---   domain <- decision <- sqlite <- http <- exe
+--   domain <- codec <- decision <- sqlite <- http <- exe
 --
 -- each one may use only the ones to its left (docs/01-design.md §ライブラリと依存の向き).
 
@@ -27,11 +27,18 @@ common language
 library domain
   import:          warnings, language
   hs-source-dirs:  src/domain
-  exposed-modules: Mba.Map, Mba.Appearance
+  exposed-modules: Mba.Map, Mba.Appearance, Mba.Sprite, Mba.Sprite.Internal
   build-depends:
     , base        >=4.18 && <5
     , containers
     , text
+
+-- Pure JSON boundaries and representations; neither DB nor HTTP dependencies.
+library codec
+  import: warnings, language
+  hs-source-dirs: src/codec
+  exposed-modules: Mba.Sprite.Json, Mba.Json.JavaScript
+  build-depends: base, aeson, bytestring, containers, scientific, text, monster-battle-hs:domain
 
 -- The decision language, the decisions, and the pure model they run on.
 library decision
@@ -43,6 +50,7 @@ library decision
     Mba.Decision.Run
     Mba.Maps
     Mba.Looks
+    Mba.Skins
     Mba.Model
     Mba.Refusal
     Mba.Saves
@@ -51,6 +59,8 @@ library decision
     , base
     , containers
     , monster-battle-hs:domain
+    , monster-battle-hs:codec
+    , transformers
     , text
 
 -- SQLite: migrations, the seed, and the interpreter that answers from it.
@@ -68,6 +78,7 @@ library sqlite
     , filepath
     , monster-battle-hs:decision
     , monster-battle-hs:domain
+    , monster-battle-hs:codec
     , sqlite-simple
     , text
 
@@ -87,11 +98,13 @@ library http
     , aeson
     , base
     , bytestring
+    , containers
     , directory
     , filepath
     , http-types
     , monster-battle-hs:decision
     , monster-battle-hs:domain
+    , monster-battle-hs:codec
     , monster-battle-hs:sqlite
     , scientific
     , text
@@ -109,6 +122,7 @@ executable monster-battle-hs
     , monster-battle-hs:http
     , monster-battle-hs:sqlite
     , time
+    , text
     , unix
     , warp
 
@@ -137,6 +151,9 @@ test-suite spec
     HttpSpec
     MapSpec
     ReadContractSpec
+    SpriteSpec
+    SkinContractSpec
+    LooksSpec
     SavesSpec
     SqliteSpec
     Support
@@ -152,6 +169,7 @@ test-suite spec
     , http-types
     , monster-battle-hs:decision
     , monster-battle-hs:domain
+    , monster-battle-hs:codec
     , monster-battle-hs:http
     , monster-battle-hs:sqlite
     , QuickCheck

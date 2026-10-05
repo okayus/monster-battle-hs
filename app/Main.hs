@@ -11,6 +11,8 @@ module Main (main) where
 import Data.Foldable (for_)
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
+import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.Wai.Handler.Warp
 import System.Directory (createDirectoryIfMissing)
@@ -29,7 +31,7 @@ main = do
   port <- maybe 3000 read <$> lookupEnv "PORT"
   path <- fromMaybe "./data/app.db" <$> lookupEnv "DATABASE_PATH"
   createDirectoryIfMissing True (takeDirectory path)
-  db <- Sqlite.open seconds path
+  db <- Sqlite.open seconds newId path
   applied <- Sqlite.migrate db "migrations" =<< milliseconds
   Sqlite.seed db localUser =<< seconds
 
@@ -59,3 +61,8 @@ seconds = floor <$> getPOSIXTime
 
 milliseconds :: IO Int64
 milliseconds = floor . (* 1000) <$> getPOSIXTime
+
+-- | The Linux kernel supplies a fresh UUID on each read. Production and dev
+-- run in Linux containers; no random source is hidden in a decision or seed.
+newId :: IO T.Text
+newId = T.strip <$> TIO.readFile "/proc/sys/kernel/random/uuid"

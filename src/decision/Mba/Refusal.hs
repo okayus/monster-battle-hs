@@ -11,10 +11,12 @@ module Mba.Refusal (Refusal (..)) where
 import Data.Text (Text)
 
 import Mba.Map (MapId, Position)
+import Mba.Sprite (SpriteError)
 
 data Refusal
   = -- | The body is not JSON.
     BadJson
+  | InvalidSprite !SpriteError
   | -- | The body is JSON, but not of the shape asked for: where, as @$.position.x@.
     Malformed !Text
   | -- | The body is longer than this many bytes. Refused before it is read.

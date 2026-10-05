@@ -15,12 +15,17 @@ module Mba.Decision.Internal (
   Phase (..),
 
   -- * Decisions
-  Decision (..),
+  Decision,
+  Creation,
+  Program (..),
+  Ids (..),
 
   -- * What a decision asks, and what it says
   Query (..),
   Change (..),
   UserId (..),
+  SkinSummary (..),
+  StoredSkin (..),
 )
 where
 
@@ -29,6 +34,7 @@ import Data.Text (Text)
 
 import Mba.Appearance (Appearance)
 import Mba.Map (GameMap, MapId, SaveData)
+import Mba.Sprite (Renderable, ResolvedAppearance, Skin)
 
 -- | Where a decision is in its one and only pass.
 data Phase = Reading | Settled
@@ -40,18 +46,23 @@ data Phase = Reading | Settled
 -- 'Reading', and only 'Settle' moves it on, so a decision cannot ask after it
 -- has said what changes, nor say it twice; and a decision whose type ends in
 -- 'Reading — a GET's — cannot say it at all.
-type Decision :: Type -> Phase -> Phase -> Type -> Type
-data Decision e i j a where
-  Pure :: a -> Decision e i i a
-  Bind :: Decision e i j a -> (a -> Decision e j k b) -> Decision e i k b
-  -- | Asking changes nothing, so it keeps the index: it may sit inside an
-  -- @if@ or a @case@, for as long as the decision is reading.
-  Ask :: Query a -> Decision e 'Reading 'Reading a
-  -- | The two ways a decision ends: no, or what should change.
-  Refuse :: e -> Decision e 'Reading j a
-  Settle :: [Change] -> Decision e 'Reading 'Settled ()
+data Ids = WithoutIds | WithIds
 
-instance Functor (Decision e i j) where
+type Decision e i j a = Program 'WithoutIds e i j a
+type Creation e i j a = Program 'WithIds e i j a
+
+-- | ID capability and phase are independent: save updates cannot generate
+-- IDs, while a creation can. GET interprets only WithoutIds/Reading.
+type Program :: Ids -> Type -> Phase -> Phase -> Type -> Type
+data Program c e i j a where
+  Pure :: a -> Program c e i i a
+  Bind :: Program c e i j a -> (a -> Program c e j k b) -> Program c e i k b
+  Ask :: Query a -> Program c e 'Reading 'Reading a
+  NewId :: Program 'WithIds e 'Reading 'Reading Text
+  Refuse :: e -> Program c e 'Reading j a
+  Settle :: [Change] -> Program c e 'Reading 'Settled ()
+
+instance Functor (Program c e i j) where
   fmap f m = Bind m (Pure . f)
 
 -- | A question about the tables. Each constructor says what its answer is,
@@ -65,11 +76,32 @@ data Query a where
   FindAppearance :: UserId -> Query (Maybe Appearance)
   -- | Render-ready JSON as stored, including retired skins.
   FindDrawing :: Text -> Query (Maybe Text)
+  FindSource :: Text -> Query (Maybe Text)
+  FindWearable :: Text -> Query (Maybe Renderable)
+  ListSkins :: Query [SkinSummary]
+
+data SkinSummary = SkinSummary
+  { summaryId :: !Text
+  , summaryName :: !Text
+  , summaryOwner :: !(Maybe UserId)
+  , summaryRetired :: !Bool
+  }
+  deriving (Show, Eq)
+
+data StoredSkin = StoredSkin
+  { storedSummary :: !SkinSummary
+  , storedSource :: !Text
+  , storedDrawing :: !Text
+  , storedRenderable :: !Renderable
+  }
+  deriving (Show, Eq)
 
 -- | What should change: a value, not SQL. Only @commit@ turns one into writes.
 data Change
   = -- | The player is here now.
     PlayerPlaced !UserId !SaveData
+  | SkinDrawn !Text !UserId !Skin
+  | LookChosen !UserId !ResolvedAppearance
   deriving (Show, Eq)
 
 -- | A user the server vouches for. "Mba.Decision" does not export the

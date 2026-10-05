@@ -3,9 +3,8 @@
 -- | JSON in and out: what the domain's values look like on the wire, and the
 -- shape a request body must have.
 --
--- Plain functions, not 'ToJSON' instances: the wire format is the HTTP
--- side's business, and instances here for the domain's types would be
--- orphans.
+-- The wire format belongs here, not to domain types. AppearanceReply wraps
+-- a domain value so its ordered encoding needs no orphan instance.
 --
 -- Shape is not rules. 'saveShape' asks whether @x@ is an integer; whether a
 -- player can stand there is the decision's to say (TS 版 docs/04 §層の分け方).
@@ -17,31 +16,54 @@ module Mba.Http.Json (
   saveJson,
   mapJson,
   appearanceJson,
+  AppearanceReply (..),
 
   -- * In
   saveShape,
 )
 where
 
-import Data.Aeson (Object, Value (..), encode, object, (.=))
+import Data.Aeson (Object, ToJSON (..), Value (..), encode, object, (.=))
+import Data.Aeson.Encoding qualified as Encoding
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.Char (ord)
 import Data.Foldable (toList)
+import Data.Map.Strict qualified as Map
 import Data.Scientific (toBoundedInteger)
 import Data.Text (Text)
-import Data.Text qualified as T
 import Network.HTTP.Types (Status, hContentType)
 import Network.Wai (Response, responseLBS)
 
-import Mba.Appearance
+import Mba.Appearance (Appearance (..), Colour (..))
+import Mba.Json.JavaScript (utf16Length)
 import Mba.Map
+import Mba.Sprite (slotName, slots)
+import Mba.Sprite.Json (appearanceJson)
 
 --------------------------------------------------------------------------------
 -- Out
 --------------------------------------------------------------------------------
 
-json :: Status -> Value -> Response
+json :: ToJSON a => Status -> a -> Response
 json status body = responseLBS status [(hContentType, "application/json")] (encode body)
+
+-- | The unchanged wardrobe displays JSON.stringify of its fetched recipe.
+-- These keys therefore have visible order: skinId, parts, colours; colour
+-- entries are id then hex, and overrides follow the canonical slot order.
+newtype AppearanceReply = AppearanceReply Appearance
+
+instance ToJSON AppearanceReply where
+  toJSON (AppearanceReply look) = appearanceJson look
+  toEncoding (AppearanceReply look) =
+    Encoding.pairs
+      ( "skinId" .= appearanceSkin look
+          <> Encoding.pair "parts" (Encoding.pairs (foldMap part slots))
+          <> Encoding.pair "colours" (Encoding.list colour (appearanceColours look))
+      )
+   where
+    part slot =
+      maybe mempty (Key.fromText (slotName slot) .=) (Map.lookup (slotName slot) (appearanceParts look))
+    colour (Colour cid hex) = Encoding.pairs ("id" .= cid <> "hex" .= hex)
 
 mapIdJson :: MapId -> Value
 mapIdJson (MapId t) = String t
@@ -51,16 +73,6 @@ positionJson (Position x y) = object ["x" .= x, "y" .= y]
 
 saveJson :: SaveData -> Value
 saveJson (SaveData m p) = object ["mapId" .= mapIdJson m, "position" .= positionJson p]
-
-appearanceJson :: Appearance -> Value
-appearanceJson look =
-  object
-    [ "skinId" .= appearanceSkin look
-    , "parts" .= appearanceParts look
-    , "colours" .= map colourJson (appearanceColours look)
-    ]
- where
-  colourJson (Colour cid hex) = object ["id" .= cid, "hex" .= hex]
 
 -- | Simplified: no exits yet. They come with the slice that travels through
 -- them, and until then no map has any.
@@ -107,6 +119,3 @@ mapIdAt at _ = Left at
 intAt :: Text -> Maybe Value -> Either Text Int
 intAt _ (Just (Number n)) | Just i <- toBoundedInteger n, abs i <= 9007199254740991 = Right i
 intAt at _ = Left at
-
-utf16Length :: Text -> Int
-utf16Length = T.foldl' (\n c -> n + if ord c > 0xFFFF then 2 else 1) 0

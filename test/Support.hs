@@ -11,6 +11,7 @@ module Support (
   -- * The model and the database
   fresh,
   withDb,
+  idSupply,
 
   -- * Requests
   aSave,
@@ -19,6 +20,7 @@ module Support (
 where
 
 import Control.Exception (bracket)
+import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Map.Strict qualified as Map
 import Data.Sequence qualified as Seq
 import Data.Text qualified as T
@@ -61,10 +63,18 @@ fresh = Model (Map.singleton startMapId starter) Map.empty Map.empty Map.empty
 -- | A database brought up the way a boot does it — the migration files, then
 -- the seed — so those are under test too. The clock is stopped.
 withDb :: (Db -> Int -> IO a) -> IO a
-withDb act = bracket (Sqlite.open (pure 1700000000) ":memory:") Sqlite.close $ \db -> do
-  applied <- Sqlite.migrate db "migrations" 1700000000000
-  Sqlite.seed db localUser 1700000000
-  act db applied
+withDb act = do
+  next <- idSupply
+  bracket (Sqlite.open (pure 1700000000) next ":memory:") Sqlite.close $ \db -> do
+    applied <- Sqlite.migrate db "migrations" 1700000000000
+    Sqlite.seed db localUser 1700000000
+    act db applied
+
+-- | Deterministic, observable IDs, with a fresh supply for each test.
+idSupply :: IO (IO T.Text)
+idSupply = do
+  counter <- newIORef (1 :: Int)
+  pure (atomicModifyIORef' counter (\n -> (n + 1, "skin-" <> T.pack (show n))))
 
 -- | A save on one of these maps, at a position in these ranges.
 aSave :: [MapId] -> (Int, Int) -> (Int, Int) -> Gen SaveData

@@ -78,6 +78,9 @@ describe (FindMap (MapId m)) found =
 describe (FindSave user) found = "FindSave " <> show user <> "  → " <> show found
 describe (FindAppearance user) found = "FindAppearance " <> show user <> "  → " <> show found
 describe (FindDrawing sid) found = "FindDrawing " <> show sid <> "  → " <> show found
+describe (FindSource sid) found = "FindSource " <> show sid <> "  → " <> show found
+describe (FindWearable sid) found = "FindWearable " <> show sid <> "  → " <> show found
+describe ListSkins found = "ListSkins → " <> show found
 
 heading :: String -> IO ()
 heading title = putStrLn ("\n" <> title)

@@ -4,20 +4,25 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 import { step, canWalkTo } from "../frontend/packages/core/src/index.ts";
-import { PART_SLOTS, SKIN_SPEC, packFrame, parseSkin, toRenderable } from "../frontend/packages/sprite/src/index.ts";
+import { CELLS_PER_FRAME, PART_SLOTS, SKIN_SPEC, packFrame, parseSkin, toRenderable } from "../frontend/packages/sprite/src/index.ts";
 
 const root = new URL("../", import.meta.url);
 const seed = await readFile(process.argv[2], "utf8");
-// Only the pure player drawing definitions; the DB imports are never loaded.
-const definitions = seed.slice(seed.indexOf("const PLAYER_PALETTE:"), seed.indexOf("function ensureDefaultSkin("));
+// Only pure seed data and drawing definitions; the DB imports are never loaded.
+const definitions = seed.slice(seed.indexOf("const MOVES ="), seed.indexOf("function ensureDefaultSkin("));
 if (!definitions.includes("function playerSkin(")) throw new Error("reference seed layout changed");
-const helpers = seed.slice(seed.indexOf("const FRAME_MS ="), seed.indexOf("function monsterSkin("));
-const context = vm.createContext({ PART_SLOTS, SKIN_SPEC, packFrame, parseSkin });
-const source = vm.runInContext(stripTypeScriptTypes(`${helpers}\n${definitions}\nplayerSkin()`), context);
+const context = vm.createContext({ CELLS_PER_FRAME, PART_SLOTS, SKIN_SPEC, packFrame, parseSkin });
+const source = vm.runInContext(stripTypeScriptTypes(`${definitions}\nplayerSkin()`), context);
 if (!source.ok) throw new Error(JSON.stringify(source.error));
 const asset = { source: source.value, renderable: toRenderable(source.value) };
 await mkdir(new URL("seed/", root), { recursive: true });
 await writeFile(new URL("seed/player-default.json", root), JSON.stringify(asset, null, 2) + "\n");
+const monsters = vm.runInContext("SPECIES.map(kind => ({ id: skinIdOf(kind.id), skin: monsterSkin(kind) }))", context);
+const skins = [{ id: "player-default", ...asset }, ...monsters.map(({ id, skin }) => {
+  if (!skin.ok) throw new Error(JSON.stringify(skin.error));
+  return { id, source: skin.value, renderable: toRenderable(skin.value) };
+})];
+await writeFile(new URL("seed/skins.json", root), JSON.stringify(skins, null, 2) + "\n");
 
 const maps = [
   { width: 5, height: 2, tiles: ["path", "tree", "path", "path", "grass", "path", "tree", "path", "path", "path"] },
@@ -37,4 +42,4 @@ const fixtures = maps.map((map) => {
 });
 await mkdir(new URL("test/fixtures/", root), { recursive: true });
 await writeFile(new URL("test/fixtures/movement.json", root), JSON.stringify(fixtures) + "\n");
-console.log(`Generated default skin and ${fixtures.reduce((n, f) => n + f.steps.length + f.walks.length, 0)} movement cases from TS 14251cc.`);
+console.log(`Generated four seed skins and ${fixtures.reduce((n, f) => n + f.steps.length + f.walks.length, 0)} movement cases from TS 14251cc.`);
