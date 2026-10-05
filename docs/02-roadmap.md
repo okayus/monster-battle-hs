@@ -61,4 +61,4 @@ SPAビルドは既存キャッシュを利用した。フロントの単体テ�
 
 ## pushの状態
 
-pushの依頼は受領済み。ただしremoteは未設定で、`gh repo view okayus/monster-battle-hs`でも参照できなかった。GitHub新規作成はAGENTS.mdにより明示依頼が必要なので、公開/非公開での作成、または別のpush先URLの回答待ち。送信先を推測してTS版へpushしない。
+ユーザーの「publicで新規作成」の依頼により、[okayus/monster-battle-hs](https://github.com/okayus/monster-battle-hs)を公開リポジトリとして作成し、mainをpush済み。originは`https://github.com/okayus/monster-battle-hs.git`で、mainはorigin/mainを追跡する。

@@ -8,7 +8,7 @@
 
 着せ替え画面は受信JSONの項目順を文字列表示へ引き継ぐため、AppearanceReplyのtoEncodingでTSの順序を保っている。値の等価性だけに戻すとE2Eが2件失敗する。HTTPの回帰テストと破壊検証で固定した。
 
-pushは依頼済みだがremote未設定。`okayus/monster-battle-hs`もGitHubで参照できず、新規作成の公開範囲、または別の送信先URLの回答待ち。詳細はロードマップ末尾。
+ユーザーのpublicでの新規作成依頼により、[okayus/monster-battle-hs](https://github.com/okayus/monster-battle-hs)を作成し、mainをpush済み。originを設定し、mainはorigin/mainを追跡する。
 
 以下は変更前の調査記録として残す。「README欠落」「46件」「未実装」の記述は調査当時の状態であり、現在地はロードマップを優先する。
 
